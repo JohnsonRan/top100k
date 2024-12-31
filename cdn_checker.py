@@ -23,27 +23,49 @@ DNS_SERVERS = [
     '114.114.114.114' # 114DNS
 ]
 
-def get_cloudflare_cidr():
-    """从 Cloudflare 页面获取 IPv4 CIDR 列表。"""
-    url = "https://www.cloudflare.com/ips-v4/"
+# 定义CDN提供商配置
+CDN_PROVIDERS = {
+    'cloudflare': {
+        'name': 'Cloudflare',
+        'url': 'https://www.cloudflare.com/ips-v4/'
+    },
+    'akamai': {
+        'name': 'Akamai', 
+        'url': 'https://github.com/MetaCubeX/meta-rules-dat/raw/meta/asn/AS20940.list'
+    },
+    'fastly': {
+        'name': 'Fastly',
+        'url': 'https://github.com/MetaCubeX/meta-rules-dat/raw/meta/asn/AS54113.list'
+    },
+    'cloudfront': {
+        'name': 'Cloudfront/Vercel',
+        'url': 'https://github.com/MetaCubeX/meta-rules-dat/raw/meta/asn/AS16509.list'
+    },
+    'gcore': {
+        'name': 'GCore',
+        'url': 'https://github.com/MetaCubeX/meta-rules-dat/raw/meta/asn/AS199524.list'
+    }
+}
+
+def get_ip_list(provider_config):
+    """获取CDN提供商的CIDR列表"""
     try:
-        response = requests.get(url)
+        response = requests.get(provider_config['url'])
         response.raise_for_status()
-        return response.text.splitlines()
+        return [line.strip() for line in response.text.splitlines() if line.strip()]
     except requests.exceptions.RequestException as e:
-        print(f"获取 Cloudflare IP 列表失败: {e}")
+        print(f"获取 {provider_config['name']} IP 列表失败: {e}")
         return []
 
-def is_cloudflare_ip(ip, cidr_list):
-    """检查 IP 是否在 Cloudflare 的 CIDR 列表中。"""
+def is_ip_in_list(ip, cidr_list):
+    """检查IP是否在CIDR列表中"""
     try:
         ip_obj = ipaddress.ip_address(ip)
         for cidr in cidr_list:
             if ip_obj in ipaddress.ip_network(cidr, strict=False):
                 return True
     except ValueError:
-      
-        return False  # ip格式错误直接跳过
+        return False
     return False
 
 def resolve_domain(domain):
@@ -61,27 +83,27 @@ def resolve_domain(domain):
         #print(f"DNS解析错误 ({dns_server}): {domain} - {e}")  # 可选的调试信息
         return []
 
-def check_domain(domain, cidr_list):
-    """检查单个域名是否使用了 Cloudflare CDN。"""
+def check_domain(domain, cdn_ip_lists):
+    """检查单个域名是否使用了任何CDN"""
     try:
         ips = resolve_domain(domain)
-        for ip in ips:
-            if is_cloudflare_ip(ip, cidr_list):
-                return True
+        results = {}
+        for provider, ip_list in cdn_ip_lists.items():
+            for ip in ips:
+                if is_ip_in_list(ip, ip_list):
+                    results[provider] = True
+                    break
+        return results
     except Exception:
-        return False
-    return False
+        return {}
 
 def process_domain(args):
-    """处理单个域名并返回是否使用 Cloudflare 和记录字符串"""
-    domain, cidr_list = args
-    if check_domain(domain, cidr_list):
-      return domain
+    """处理单个域名并返回CDN使用情况"""
+    domain, cdn_ip_lists = args
+    results = check_domain(domain, cdn_ip_lists)
+    if results:
+        return domain, results
     return None
-
-def init_worker(cloudflare_cidr):
-    global cidr_list_worker
-    cidr_list_worker = cloudflare_cidr
 
 def format_status(last_time, matched_count, random_domain=None):
     """格式化状态信息，包含内存使用、耗时、匹配数量和随机域名示例"""
@@ -171,18 +193,18 @@ def filter_domains(domains, ad_domains):
     return filtered
 
 def main():
-    # 在主函数开始时增加文件限制
     increase_file_limit()
     
-    cloudflare_cidr = get_cloudflare_cidr()
-    if not cloudflare_cidr:
-        return
-
-    # 先测试 cloudflare.com
-    if check_domain("cloudflare.com", cloudflare_cidr):
-        print("cloudflare.com 检测通过", flush=True)
-    else:
-        print("cloudflare.com 检测失败，请检查网络", flush=True)
+    # 获取所有CDN提供商的IP列表
+    cdn_ip_lists = {}
+    for provider_id, config in CDN_PROVIDERS.items():
+        ip_list = get_ip_list(config)
+        if ip_list:
+            cdn_ip_lists[provider_id] = ip_list
+            print(f"已加载 {config['name']} IP列表：{len(ip_list)}条")
+    
+    if not cdn_ip_lists:
+        print("无法获取任何CDN提供商的IP列表")
         return
     
     # 加载广告域名
@@ -204,54 +226,53 @@ def main():
     print(f"过滤后域名数量: {filtered_count}", flush=True)
     print(f"已过滤掉 {original_count - filtered_count} 个广告域名", flush=True)
     
-    cloudflare_domains = []
-    total_domains = len(domains)
+    results = {}
     processed = 0
-    matched_count = 0  # 添加匹配计数器
-    last_update_time = time.time()  # 添加时间记录
+    last_update_time = time.time()
     
-    print(f"开始处理 {total_domains} 个域名...", flush=True)
+    print(f"开始处理 {filtered_count} 个域名...", flush=True)
     
     with concurrent.futures.ThreadPoolExecutor(max_workers=512) as executor:
         futures = []
-        results = []
         
-        # 提交任务
         for domain in domains:
-            future = executor.submit(process_domain, (domain, cloudflare_cidr))
+            future = executor.submit(process_domain, (domain, cdn_ip_lists))
             futures.append(future)
         
-        # 获取结果
         for future in concurrent.futures.as_completed(futures):
             try:
                 result = future.result()
                 if result:
-                    results.append(result)
-                    matched_count += 1  # 更新匹配计数
+                    domain, cdn_results = result
+                    results[domain] = cdn_results
                 processed += 1
-                if processed % 10000 == 0:  # 每处理10000个域名打印一次进度
-                    percentage = (processed / total_domains) * 100
-                    # 如果有匹配结果，随机选择一个显示
-                    random_domain = random.choice(results) if results else None
-                    status = format_status(last_update_time, matched_count, random_domain)
-                    print(
-                        f"进度: {processed}/{total_domains} "
-                        f"({percentage:.1f}%) | {status}",
-                        flush=True
-                    )
-                    last_update_time = time.time()  # 更新时间记录
+                if processed % 10000 == 0:
+                    percentage = (processed / filtered_count) * 100
+                    status = format_status(last_update_time, len(results))
+                    print(f"进度: {processed}/{filtered_count} ({percentage:.1f}%) | {status}", flush=True)
+                    last_update_time = time.time()
             except Exception as e:
                 print(f"无法处理: {e}", flush=True)
-        
-        cloudflare_domains = results
     
-    with open('cloudflare_doamins.txt', 'w', encoding='utf-8') as f:
-        #print("\n发现的 Cloudflare 域名：")
-        for domain in cloudflare_domains:
-            f.write(f"domain:{domain}\n") 
-            #print(domain)
+    # 保存每个CDN提供商的域名到单独文件
+    for provider_id, config in CDN_PROVIDERS.items():
+        with open(f'{provider_id}_domains.txt', 'w', encoding='utf-8') as f:
+            for domain, cdn_results in results.items():
+                if cdn_results.get(provider_id):
+                    f.write(f"domain:{domain}\n")
     
-    print("\n处理完成，结果已保存在 cloudflare_doamins.txt", flush=True)
+    # 保存所有使用任何CDN的域名到合集文件
+    with open('all_cdn_domains.txt', 'w', encoding='utf-8') as f:
+        # 使用集合去重
+        cdn_domains = set(domain for domain, cdn_results in results.items() if cdn_results)
+        for domain in cdn_domains:
+            f.write(f"domain:{domain}\n")
+    
+    print("\n处理完成，结果已保存")
+    print(f"所有CDN域名已保存到 all_cdn_domains.txt")
+    for provider_id, config in CDN_PROVIDERS.items():
+        provider_domains = sum(1 for r in results.values() if r.get(provider_id))
+        print(f"{config['name']}: {provider_domains}个域名 (已保存到 {provider_id}_domains.txt)")
 
 if __name__ == "__main__":
     main()

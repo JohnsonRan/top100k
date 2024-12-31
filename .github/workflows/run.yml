@@ -47,7 +47,8 @@ jobs:
         commit: main
         replacesArtifacts: true
         token: ${{ secrets.GITHUB_TOKEN }}
-        artifacts: "*_doamins.txt"
+        artifacts: |
+          - "*_doamins.txt"
         
     - name: Delete workflow runs
       uses: Mattraks/delete-workflow-runs@main
