@@ -1,6 +1,3 @@
-# This workflow will install Python dependencies, run tests and lint with a single version of Python
-# For more information see: https://docs.github.com/en/actions/automating-builds-and-tests/building-and-testing-python
-
 name: Check CDN
 
 on:
@@ -11,7 +8,7 @@ permissions:
   actions: write
 
 jobs:
-  build:
+  Build:
 
     runs-on: ubuntu-latest
 
@@ -29,13 +26,16 @@ jobs:
 
     - name: Run!
       run: |
+        mkdir -p output
         python cdn_checker.py
+        mv {*_domains.txt,*_ranges.json} output/
 
     - name: Upload artifacts
       uses: actions/upload-artifact@v4
       with:
         name: top100k
-        path: "*_doamins.txt"
+        path: |
+            output/*
 
     - name: Create release
       continue-on-error: true
@@ -47,8 +47,7 @@ jobs:
         commit: main
         replacesArtifacts: true
         token: ${{ secrets.GITHUB_TOKEN }}
-        artifacts: |
-          - "*_doamins.txt"
+        artifacts: "output/*"
         
     - name: Delete workflow runs
       uses: Mattraks/delete-workflow-runs@main
